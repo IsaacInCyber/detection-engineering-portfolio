@@ -1,1 +1,46 @@
+# LSASS Credential Dump via comsvcs.dll
+# MITRE ATT&CK: T1003.001 - LSASS Memory
+# Author: Isaac Amoussou-Kpakpa
+# Created: 2026-04
 
+title: LSASS Credential Dump via comsvcs.dll
+id: t1003.001-lsass-dump
+status: experimental
+description: |
+  Detects credential dumping from LSASS using comsvcs.dll MiniDump function.
+  This is a living-off-the-land technique - comsvcs.dll is Microsoft-signed
+  and already on the system, making it harder to detect than dropping Mimikatz.
+
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+  - https://lolbas-project.github.io/lolbas/Libraries/Comsvcs/
+
+tags:
+  - attack.credential_access
+  - attack.t1003.001
+
+logsource:
+  product: microsoft_defender_endpoint
+  service: DeviceProcessEvents
+
+detection:
+  query: |
+    let Time = 30m;
+    DeviceProcessEvents
+    | where TimeGenerated >= ago(Time)
+    | where ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump"
+    | project TimeGenerated, ProcessCommandLine, FileName, DeviceName, FolderPath, IsProcessRemoteSession
+
+  timeframe: 30m
+
+falsepositives:
+  - Legitimate memory dump collection by IT support
+  - Crash dump utilities (rare to use comsvcs.dll method)
+
+level: critical
+
+simulation:
+  tool: rundll32
+  command: rundll32.exe C:\Windows\System32\comsvcs.dll MiniDump <lsass_pid> C:\temp\lsass.dmp full
+  platform: Windows target VM
+  notes: Requires elevated privileges and LSASS PID
