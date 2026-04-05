@@ -1,0 +1,50 @@
+# Port Scan Detection
+# MITRE ATT&CK: T1046 - Network Service Discovery
+# Author: Isaac Amoussou-Kpakpa
+# Created: 2026-04
+
+title: Port Scan Detection
+id: t1046-port-scan
+status: experimental
+description: |
+  Detects when a single source IP scans 50+ unique ports on a target host within 15 minutes.
+  Attackers scan for open services during reconnaissance before exploitation.
+
+references:
+  - https://attack.mitre.org/techniques/T1046/
+
+tags:
+  - attack.discovery
+  - attack.t1046
+
+logsource:
+  product: microsoft_defender_endpoint
+  service: DeviceNetworkEvents
+
+detection:
+  query: |
+    let Threshold = 50;
+    DeviceNetworkEvents
+    | where Timestamp >= ago(1h)
+    | summarize 
+        PortsScanned = dcount(RemotePort),
+        Ports = make_set(RemotePort),
+        TotalConnections = count()
+      by DeviceName, RemoteIP, bin(Timestamp, 15m)
+    | where PortsScanned >= Threshold
+    | top 10 by PortsScanned
+
+  threshold: 50
+  timeframe: 15m
+
+falsepositives:
+  - Vulnerability scanners (Nessus, Qualys) - whitelist by source IP
+  - Network monitoring tools
+  - Asset discovery scans
+
+level: medium
+
+simulation:
+  tool: nmap
+  command: nmap -sS -p 1-1000 <target_ip>
+  platform: Parrot Security OS
