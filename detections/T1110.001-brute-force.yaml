@@ -1,0 +1,52 @@
+title: Brute Force RDP Detection
+id: t1110.001-brute-force
+status: experimental
+author: Isaac Amoussou-Kpakpa
+date: 2026/04/05
+
+description: |
+  Detects brute force attacks against RDP where an attacker tries multiple
+    passwords against a single account. Triggers when 5+ failed logins occur
+      from the same source within a 10 minute window.
+
+      references:
+        - https://attack.mitre.org/techniques/T1110/001/
+
+        tags:
+          - attack.credential_access
+            - attack.t1110.001
+
+            logsource:
+              product: microsoft_defender_endpoint
+                service: DeviceLogonEvents
+
+                detection:
+                  query: |
+                      let threshold = 5;
+                          DeviceLogonEvents
+                              | where ActionType == "LogonFailed"
+                                  | where Timestamp >= ago(1h)
+                                      | summarize 
+                                              IpToInvestigate = make_set(RemoteIP),
+                                                      FailureReason = make_set(FailureReason),
+                                                              TimeOfInterest = make_set(Timestamp),
+                                                                      AccountsTried = make_set(AccountName),
+                                                                              Attempts = count()
+                                                                                    by DeviceName, bin(Timestamp, 10m)
+                                                                                        | where Attempts > threshold
+                                                                                            | project DeviceName, TimeOfInterest, Attempts, FailureReason, IpToInvestigate, AccountsTried
+
+                                                                                              threshold: 5
+                                                                                                timeframe: 10m
+
+                                                                                                  falsepositives:
+                                                                                                    - Users with forgotten passwords
+                                                                                                      - Service accounts with expired credentials
+                                                                                                        - Automated systems with misconfigured credentials
+                                                                                                        
+                                                                                                        level: medium
+                                                                                                        
+                                                                                                        simulation:
+                                                                                                          tool: hydra
+                                                                                                            command: hydra -l administrator -P passwords.txt rdp://target
+                                                                                                              platform: Parrot Security OS
