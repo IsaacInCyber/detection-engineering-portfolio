@@ -1,0 +1,126 @@
+# Triage User AuthPattern 30d
+# MITRE ATT&CK: T1078       - Valid Accounts
+#               T1110.003   - Brute Force: Password Spraying
+#               T1539       - Steal Web Session Cookie
+#               T1556       - Modify Authentication Process
+# Author: Isaac Amoussou-Kpakpa
+# Created: 2026-04-29
+
+title: Triage User AuthPattern 30d
+id: 8f3c2d4a-7b91-4e6f-a1c8-9d2e5b3f7a14
+status: experimental
+type: hunting
+description: |
+  Per-user 30-day authentication triage. Pulls all sign-in attempts for a
+  target UPN from AADSignInEventsBeta and classifies each event into operational
+  outcomes that map to credential and session state: Success, ValidCred_MFABlocked,
+  ValidCred_CABlocked, FailedAuth, or Other_<code>. Projects the fields needed to
+  distinguish benign activity from credential compromise or token replay
+  (IsInteractive, AuthenticationDetails, ISP, SessionId, RiskLevelDuringSignIn).
+  Use when an account has been flagged by an alert, user report, or proactive hunt
+  and you need a structured timeline to call benign vs. suspicious vs. compromised.
+references:
+  - https://attack.mitre.org/techniques/T1078/
+  - https://attack.mitre.org/techniques/T1110/003/
+  - https://attack.mitre.org/techniques/T1539/
+  - https://attack.mitre.org/techniques/T1556/
+  - https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes
+tags:
+  - attack.initial_access
+  - attack.credential_access
+  - attack.defense_evasion
+  - attack.t1078
+  - attack.t1110.003
+  - attack.t1539
+  - attack.t1556
+  - hunting
+  - aitm
+  - token_replay
+logsource:
+  product: microsoft_defender_xdr
+  service: AADSignInEventsBeta
+detection:
+  query: |
+    let targetUser = "";   // <-- swap in the UPN under investigation
+    let lookback = 30d;
+    let sprayCodes     = dynamic([50126, 50053, 50055, 50057, 50064, 50034]);
+    let validCredCodes = dynamic([50074, 50076, 50079]);
+    let caBlockedCodes = dynamic([53003, 530032, 50097, 50158]);
+    AADSignInEventsBeta
+    | where Timestamp > ago(lookback)
+    | where AccountUpn =~ targetUser
+    | extend Outcome = case(
+        ErrorCode == 0,                "Success",
+        ErrorCode in (validCredCodes), "ValidCred_MFABlocked",
+        ErrorCode in (caBlockedCodes), "ValidCred_CABlocked",
+        ErrorCode in (sprayCodes),     "FailedAuth",
+        strcat("Other_", tostring(ErrorCode)))
+    | project
+        Timestamp,
+        Outcome,
+        ErrorCode,
+        IsInteractive,
+        AccountUpn,
+        IPAddress,
+        City, State, Country,
+        ISP,
+        UserAgent,
+        Application,
+        SessionId,
+        CorrelationId,
+        AuthenticationDetails,
+        RiskLevelDuringSignIn,
+        RiskState,
+        ConditionalAccessStatus
+    | sort by Timestamp asc
+  timeframe: 30d
+outcomes:
+  - name: Success
+    meaning: Sign-in completed
+  - name: ValidCred_MFABlocked
+    meaning: Password worked, MFA stopped the attacker
+  - name: ValidCred_CABlocked
+    meaning: Password worked, Conditional Access stopped them
+  - name: FailedAuth
+    meaning: Spray-pattern failures (bad password, locked, expired, disabled)
+  - name: Other_<code>
+    meaning: Unclassified error code; investigate and fold into the appropriate bucket
+investigation:
+  - check: SessionId fork
+    detail: Same full SessionId GUID appearing across multiple countries indicates
+            token replay. Definitive AiTM signal with no benign explanation.
+  - check: Hosting ASN on success
+    detail: Successful sign-in from a datacenter ISP (DigitalOcean, OVH, Hetzner,
+            M247, Vultr, Linode, Contabo) is near-confirmed compromise. Humans
+            do not legitimately sign in from VPS infrastructure.
+  - check: AuthenticationDetails on multi-country successes
+    detail: satisfiedByClaimInToken from a new IP or ASN with no prior MFA
+            history is the token replay fingerprint.
+  - check: ValidCred outcome counts
+    detail: A high count of ValidCred_MFABlocked or ValidCred_CABlocked means the
+            credential is in attacker hands regardless of whether they got in.
+            Reset the password.
+  - check: B2B context
+    detail: For guest accounts, apply a higher evidence bar. Legitimate-use space
+            is wider (travel, VPN, multi-device). Contact the home tenant before
+            unilateral containment.
+falsepositives:
+  - Globally distributed consultants or contractors with legitimate multi-country access
+  - Users on a corporate VPN egressing through multiple regional gateways
+  - B2B guests whose home tenant allows broad geographic roaming
+  - Service principals or automation accounts misclassified as user objects
+level: medium
+simulation:
+  tool: Evilginx2
+  description: |
+    Stand up an Evilginx2 phishlet on a Linux VPS pointed at a lookalike domain
+    proxying login.microsoftonline.com. Authenticate a test account through the
+    phishlet to capture the post-MFA session cookie. Import the cookie into a
+    separate browser on different infrastructure and access M365 resources to
+    generate token-replay telemetry. Validate that this hunt surfaces the test
+    account with a session ID appearing from both the victim and attacker IPs.
+  platform: Linux VPS (DigitalOcean, OVH, Hetzner)
+  alternatives:
+    - EvilProxy
+    - Mamba2FA
+    - Tycoon2FA
