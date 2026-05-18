@@ -1,55 +1,36 @@
 # Detection Engineering Portfolio
 
-Microsoft Sentinel is my SIEM of choice, and this repo is where I publish the hunting queries and analytic rules I build against it. Each detection was simulated end-to-end in my home lab — attack run, telemetry observed, KQL written, and false positives tuned out — so the queries reflect what actually fires in production.
+Microsoft Sentinel is my SIEM of choice. This repo is where I publish the hunting queries and analytic rules I build for detection work.
+
+The YAML files in `detections/` were originally written against Microsoft Defender for Endpoint’s Advanced Hunting schema (`DeviceProcessEvents`, `DeviceLogonEvents`, `DeviceNetworkEvents`) during a prior lab build that included MDE. I no longer have MDE access, so new work targets Sentinel-native sources. The existing queries are kept here as reference for the M365 Defender XDR schema and the underlying detection logic, which ports over to Sentinel with table substitutions.
 
 ## Lab Setup
 
-A Windows 10 VM in Azure serves as the target, with the Azure Monitor Agent shipping Windows Security events, Sysmon, and PowerShell operational logs into a Log Analytics workspace. Entra ID sign-in and audit logs stream in through diagnostic settings. A Parrot Security attack box in UTM drives the offensive traffic, and Sentinel sits on top as the detection and hunting layer.
+A Windows 10 VM in Azure as the target with Sysmon and Security event auditing. A Parrot Security attack box in UTM driving the offensive traffic: reconnaissance, brute force, encoded PowerShell, LSASS dump, persistence, and lateral movement. Telemetry was captured into M365 Defender Advanced Hunting tables during the original build. The same activity is observable in Sentinel via `SecurityEvent`, `Event` (Sysmon), `SigninLogs`, and `AuditLogs` through the Azure Monitor Agent and Entra ID diagnostic settings.
 
-| Component | Details |
-|-----------|---------|
-| Attack box | Parrot Security OS (ARM64) on UTM |
-| Target | Windows 10 VM in Azure with Sysmon + Security auditing |
-| SIEM | Microsoft Sentinel (Log Analytics workspace) |
-| Ingestion | Azure Monitor Agent + Entra ID diagnostic settings |
-| Log tables | `SecurityEvent`, `Event` (Sysmon), `SigninLogs`, `AuditLogs` |
+## Featured Hunt: Per-User 30-Day Authentication Triage
 
-## The Attack Chain
+[`hunting/Triage_User_AuthPattern_30d.yml`](./hunting/Triage_User_AuthPattern_30d.yml)
 
-```
-Port scan → Brute force RDP → Encoded PowerShell → LSASS dump → Persistence → Lateral movement
-```
+Pulls 30 days of sign-in attempts for a target UPN and classifies each event into operational outcomes that map to credential and session state: `Success`, `ValidCred_MFABlocked`, `ValidCred_CABlocked`, `FailedAuth`, and `Other_<code>`. Projects the fields needed to distinguish benign activity from credential compromise or token replay (`IsInteractive`, `AuthenticationDetails`, `ISP`, `SessionId`, `RiskLevelDuringSignIn`).
+
+Designed to be the first query an analyst runs when an account is flagged by an alert, user report, or proactive hunt and you need a structured view of recent auth behavior. Covers AiTM and token-replay scenarios mapped to T1078 (Valid Accounts), T1110.003 (Password Spraying), T1539 (Steal Web Session Cookie), and T1556 (Modify Authentication Process).
 
 ## Detections
 
-| Technique | MITRE ID | What it catches |
-|-----------|----------|-----------------|
-| Port Scan | T1046 | 50+ ports from a single source in 15min (Sysmon EID 3) |
-| Password Spray | T1110.003 | 20+ unique accounts failing auth from one source IP (4625 / `SigninLogs`) |
-| Brute Force RDP | T1110.001 | 5+ failed RDP logons (LogonType 10) from same source in 10min |
-| Encoded PowerShell | T1059.001 | `powershell.exe -enc` with inline base64 decode for review |
-| LSASS Dump | T1003.001 | `comsvcs.dll` + `MiniDump` in command line (Sysmon EID 1) |
+The five YAML files in [`detections/`](./detections) cover the attack chain that was executed end-to-end in the lab:
 
-Each detection lives in `detections/` as a YAML file containing the KQL query plus metadata (technique ID, severity, frequency), with inline comments explaining the logic. Ad-hoc hunting queries live in `hunting/`.
-
-## Example: LSASS Dump via comsvcs.dll
-
-This catches credential theft using a signed Windows binary:
-
-```kql
-Event
-| where TimeGenerated >= ago(30m)
-| where Source == "Microsoft-Windows-Sysmon" and EventID == 1
-| extend CmdLine = tostring(parse_xml(EventData).DataItem.EventData.Data[10]["#text"])
-| where CmdLine has_all ("comsvcs.dll", "MiniDump")
-| project TimeGenerated, Computer, CmdLine
+```
+Port scan → Brute force / Password spray → Encoded PowerShell → LSASS dump
 ```
 
-Why this works: attackers reach for `comsvcs.dll` because it’s legitimate — signed by Microsoft, already on the system, no need to drop Mimikatz. The detection catches the behavior pattern, not a specific tool name.
+### How the detections are structured
+
+Every YAML file in `detections/` follows the same shape: a `description` block explaining the technique and why the detection logic works, a `references` section pointing to MITRE ATT&CK and any relevant LOLBAS or vendor write-ups, the `query` itself with inline comments on threshold choices and known false positive sources, and `tags` mapping the file to MITRE techniques and tactics. Open the files directly for the detection logic.
 
 ## What I Picked Up
 
-- Threshold tuning is half the battle — started with 5 failed logins, had to adjust based on actual noise
-- Behavioral detection beats signature detection every time
-- KQL regex for pulling and decoding base64 payloads is more useful than I expected
-- The difference between `has` and `contains` actually matters for performance
+- Threshold tuning is half the battle. Initial thresholds rarely survive contact with real noise.
+- Behavioral detection beats signature detection, especially for living-off-the-land techniques.
+- The KQL difference between `has`, `contains`, and `==` matters for both correctness and performance.
+- Portable detection design pays off. Writing logic that maps cleanly from `DeviceProcessEvents` to `SecurityEvent` 4688 or Sysmon EID 1 is more valuable than coupling tightly to one schema.
